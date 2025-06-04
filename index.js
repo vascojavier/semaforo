@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const app = express();
-const PORT = 3000;
+
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -30,11 +31,11 @@ app.post('/api/location', (req, res) => {
 });
 
 app.get('/api/locations', (req, res) => {
-  res.setHeader('Content-Type', 'application/json'); // Asegura que el navegador lo trate como JSON
+  res.setHeader('Content-Type', 'application/json');
   res.json(userLocations);
 });
 
-// 👇 Esta línea es clave para que funcione desde tu teléfono
+// Escucha en todas las interfaces para funcionar bien en Heroku y local
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Servidor escuchando en http://192.168.178.169:${PORT}`);
+  console.log(`✅ Servidor escuchando en el puerto ${PORT}`);
 });
