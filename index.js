@@ -7,24 +7,21 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Datos en memoria
 const userLocations = {};  // { nombre: {latitude, longitude, speed, timestamp} }
 let intersections = [];    // [{ id, latitude, longitude }]
 
 // --- API para usuarios y posiciones ---
 
 app.post('/api/location', (req, res) => {
-  const { name = 'Sin nombre', latitude, longitude, speed, timestamp } = req.body;
-  const date = new Date(timestamp);
-
+  const { name = 'Sin nombre', latitude, longitude, speed } = req.body;
+  const timestamp = Date.now(); // ⏱️ Timestamp real
   userLocations[name] = {
     latitude,
     longitude,
     speed,
-    timestamp: date.toISOString(),
+    timestamp,
   };
-
-  console.log(`📍 Recibido de ${name}: lat ${latitude}, lon ${longitude}, speed ${speed} m/s, tiempo ${date.toLocaleString()}`);
+  console.log(`📍 Recibido de ${name}: lat ${latitude}, lon ${longitude}, speed ${speed} m/s, tiempo ${new Date(timestamp).toLocaleString()}`);
   res.json({ status: 'ok' });
 });
 
@@ -32,27 +29,48 @@ app.get('/api/locations', (req, res) => {
   res.json(userLocations);
 });
 
+// ✅ Nueva ruta para borrar usuario manualmente (ej. al cerrar sesión)
+app.delete('/api/location/:name', (req, res) => {
+  const { name } = req.params;
+  if (userLocations[name]) {
+    delete userLocations[name];
+    console.log(`🗑️ Usuario eliminado: ${name}`);
+    return res.json({ status: 'deleted' });
+  } else {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+});
+
+// --- Limpieza automática cada 30 segundos de usuarios inactivos (> 60s sin actualizar) ---
+setInterval(() => {
+  const now = Date.now();
+  const INACTIVITY_LIMIT = 60 * 1000; // 60 segundos
+  for (const [name, data] of Object.entries(userLocations)) {
+    if (now - data.timestamp > INACTIVITY_LIMIT) {
+      console.log(`⏳ Usuario inactivo eliminado: ${name}`);
+      delete userLocations[name];
+    }
+  }
+}, 30000);
+
 // --- CRUD de intersecciones ---
 
-// Crear
 app.post('/intersections', (req, res) => {
   const { latitude, longitude } = req.body;
   if (typeof latitude !== 'number' || typeof longitude !== 'number') {
     return res.status(400).json({ error: 'Latitude y longitude requeridos y deben ser números' });
   }
-  const id = Date.now().toString(); // id simple timestamp string
+  const id = Date.now().toString();
   const intersection = { id, latitude, longitude };
   intersections.push(intersection);
   console.log(`➕ Intersección creada: ${id}`);
   res.json(intersection);
 });
 
-// Leer todas
 app.get('/intersections', (req, res) => {
   res.json(intersections);
 });
 
-// Borrar por id
 app.delete('/intersections/:id', (req, res) => {
   const { id } = req.params;
   const beforeLength = intersections.length;
@@ -64,15 +82,13 @@ app.delete('/intersections/:id', (req, res) => {
   res.json({ status: 'deleted' });
 });
 
-// --- Lógica semáforo: GET /semaphore/:name ---
+// --- Lógica semáforo ---
 
-// Parámetros configurables para proximidad (en metros)
-const PROXIMITY_RADIUS = 50; // qué tan cerca debe estar el usuario de la intersección para considerarlo "en ella"
+const PROXIMITY_RADIUS = 50;
 
-// Función para calcular distancia entre dos puntos GPS en metros (Haversine)
 function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
   const toRad = (deg) => deg * Math.PI / 180;
-  const R = 6371000; // Radio Tierra en metros
+  const R = 6371000;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const a =
@@ -83,20 +99,11 @@ function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// Función para detectar si usuario está dentro de proximidad a una intersección
 function isUserNearIntersection(userLoc, intersection) {
   const dist = getDistanceFromLatLonInMeters(userLoc.latitude, userLoc.longitude, intersection.latitude, intersection.longitude);
   return dist <= PROXIMITY_RADIUS;
 }
 
-// Aquí definimos una lógica simplificada:
-//  - Si el usuario está cerca de alguna intersección,
-//  - Si hay otro usuario cerca de la misma intersección con trayectoria "cruzada", da rojo,
-//  - Sino da verde.
-
-// Para la trayectoria cruzada, vamos a suponer que si dos usuarios están acercándose a la misma intersección pero desde direcciones que se cruzan, el semáforo cambia.
-
-// Función auxiliar para obtener dirección del usuario hacia la intersección en grados
 function getBearing(lat1, lon1, lat2, lon2) {
   const toRad = deg => deg * Math.PI / 180;
   const toDeg = rad => rad * 180 / Math.PI;
@@ -108,7 +115,6 @@ function getBearing(lat1, lon1, lat2, lon2) {
   return (brng + 360) % 360;
 }
 
-// Función para determinar si dos trayectorias se cruzan aproximadamente (diferencia > 45° y < 135°)
 function trajectoriesCross(bearing1, bearing2) {
   const diff = Math.abs(bearing1 - bearing2);
   return (diff > 45 && diff < 135) || (diff > 225 && diff < 315);
@@ -119,42 +125,78 @@ app.get('/semaphore/:name', (req, res) => {
   const userLoc = userLocations[name];
   if (!userLoc) return res.status(404).json({ error: 'Usuario no encontrado o sin ubicación' });
 
-  // Buscar intersección cercana
   const nearbyIntersections = intersections.filter(i => isUserNearIntersection(userLoc, i));
   if (nearbyIntersections.length === 0) {
-    return res.json({ color: null }); // No está cerca de semáforo
+    return res.json({ color: null });
   }
 
-  // Por simplicidad, tomamos la primera intersección cercana
   const intersection = nearbyIntersections[0];
-
-  // Obtener usuarios cerca de la misma intersección (excepto este usuario)
   const othersNearby = Object.entries(userLocations)
     .filter(([otherName, loc]) => otherName !== name && isUserNearIntersection(loc, intersection));
 
-  // Si no hay nadie más, semáforo verde
   if (othersNearby.length === 0) {
     return res.json({ color: 'green' });
   }
 
-  // Calculamos el rumbo (bearing) del usuario hacia la intersección
   const userBearing = getBearing(userLoc.latitude, userLoc.longitude, intersection.latitude, intersection.longitude);
 
-  // Revisamos si algún otro usuario tiene trayectoria "cruzada"
-  for (const [otherName, otherLoc] of othersNearby) {
+  for (const [, otherLoc] of othersNearby) {
     const otherBearing = getBearing(otherLoc.latitude, otherLoc.longitude, intersection.latitude, intersection.longitude);
     if (trajectoriesCross(userBearing, otherBearing)) {
-      // Semáforo rojo si hay alguien cruzado
       return res.json({ color: 'red' });
     }
   }
 
-  // Si ninguno cruza, semáforo verde
   return res.json({ color: 'green' });
 });
 
+// --- Consulta conjunta de semáforos y usuarios ---
 
-// Inicio del servidor
+app.get('/semaphores', (req, res) => {
+  const results = {};
+  for (const [name, loc] of Object.entries(userLocations)) {
+    const nearbyIntersections = intersections.filter(i => isUserNearIntersection(loc, i));
+    if (nearbyIntersections.length === 0) {
+      results[name] = { color: null };
+      continue;
+    }
+    const intersection = nearbyIntersections[0];
+    const othersNearby = Object.entries(userLocations)
+      .filter(([otherName, otherLoc]) => otherName !== name && isUserNearIntersection(otherLoc, intersection));
+    
+    if (othersNearby.length === 0) {
+      results[name] = { color: 'green' };
+      continue;
+    }
+
+    const userBearing = getBearing(loc.latitude, loc.longitude, intersection.latitude, intersection.longitude);
+    let color = 'green';
+    for (const [, otherLoc] of othersNearby) {
+      const otherBearing = getBearing(otherLoc.latitude, otherLoc.longitude, intersection.latitude, intersection.longitude);
+      if (trajectoriesCross(userBearing, otherBearing)) {
+        color = 'red';
+        break;
+      }
+    }
+    results[name] = { color };
+  }
+  res.json(results);
+});
+
+app.delete('/api/location/:name', (req, res) => {
+  const { name } = req.params;
+  if (userLocations[name]) {
+    delete userLocations[name];
+    console.log(`🧹 Usuario eliminado del mapa: ${name}`);
+    return res.json({ status: 'deleted' });
+  } else {
+    return res.status(404).json({ error: 'Usuario no encontrado' });
+  }
+});
+
+
+// --- Inicio del servidor ---
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Servidor escuchando en puerto ${PORT}`);
 });
