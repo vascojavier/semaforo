@@ -9,6 +9,7 @@ app.use(express.json());
 
 const userLocations = {};  // { nombre: {latitude, longitude, speed, timestamp} }
 let intersections = [];    // [{ id, latitude, longitude }]
+let semaforos = [];        // [{ id, latitude, longitude }]  <-- NUEVO
 
 // --- API para usuarios y posiciones ---
 
@@ -82,7 +83,27 @@ app.delete('/intersections/:id', (req, res) => {
   res.json({ status: 'deleted' });
 });
 
-// --- Lógica semáforo ---
+// --- NUEVAS RUTAS para semáforos ---
+
+// Crear un semáforo nuevo
+app.post('/api/semaforos', (req, res) => {
+  const { latitude, longitude } = req.body;
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return res.status(400).json({ error: 'Latitude y longitude requeridos y deben ser números' });
+  }
+  const id = Date.now().toString();
+  const semaforo = { id, latitude, longitude };
+  semaforos.push(semaforo);
+  console.log(`➕ Semáforo creado: ${id}`);
+  res.status(201).json(semaforo);
+});
+
+// Obtener todos los semáforos
+app.get('/api/semaforos', (req, res) => {
+  res.json(semaforos);
+});
+
+// --- Lógica semáforo --- (tu código original, sin cambios)
 
 const PROXIMITY_RADIUS = 50;
 
@@ -183,17 +204,9 @@ app.get('/semaphores', (req, res) => {
   res.json(results);
 });
 
-app.delete('/api/location/:name', (req, res) => {
-  const { name } = req.params;
-  if (userLocations[name]) {
-    delete userLocations[name];
-    console.log(`🧹 Usuario eliminado del mapa: ${name}`);
-    return res.json({ status: 'deleted' });
-  } else {
-    return res.status(404).json({ error: 'Usuario no encontrado' });
-  }
+app.get('/', (req, res) => {
+  res.send('Backend semáforo funcionando');
 });
-
 
 // --- Inicio del servidor ---
 
